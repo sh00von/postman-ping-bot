@@ -203,7 +203,7 @@ function setupBotHandlers(bot: Bot) {
     if (newlyAdded.length > 0) {
       const addedList = newlyAdded.map((p) => `• <code>${escapeHtml(p)}</code>`).join("\n");
       const suffix = priority === "normal" ? "" : ` <i>(${badge} ${priority})</i>`;
-      lines.push(`✅ <b>Added ${newlyAdded.length} item(s) to watchlist${suffix ? "" : ""}:</b>${suffix}`, addedList);
+      lines.push(`✅ <b>Added ${newlyAdded.length} item(s) to watchlist:</b>${suffix}`, addedList);
     }
 
     if (alreadyPresent.length > 0) {
