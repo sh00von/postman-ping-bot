@@ -102,6 +102,25 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/**
+ * Cleans a Gmail snippet for one alert line: collapses all whitespace runs
+ * (Gmail snippets can contain newlines) and truncates at a word boundary
+ * with an ellipsis. Returns "" when there is nothing worth showing, so
+ * callers can simply omit the snippet line.
+ */
+export function cleanSnippet(snippet = "", maxLength = 140): string {
+  const collapsed = snippet.replace(/\s+/g, " ").trim();
+  if (!collapsed) return "";
+  if (collapsed.length <= maxLength) return collapsed;
+  const cut = collapsed.slice(0, maxLength);
+  const lastSpace = cut.lastIndexOf(" ");
+  const trimmed = (lastSpace > maxLength / 2 ? cut.slice(0, lastSpace) : cut).replace(
+    /[.,;:!?]+$/,
+    ""
+  );
+  return `${trimmed}…`;
+}
+
 /** Short visual badge for a rule's alert priority. */
 function priorityBadge(priority?: string): string {
   if (priority === "urgent") return "🔴";
@@ -568,6 +587,7 @@ function setupBotHandlers(bot: Bot) {
       [
         "📬 <b>New mail from</b> Boss &lt;boss@example.com&gt;",
         "<b>Subject:</b> Q3 Review — Test alert confirmation",
+        "<i>Hi, your Q3 review is scheduled for Friday at 10 AM. Please confirm…</i>",
         `🕒 ${new Date().toLocaleTimeString("en-US", {
           timeZone: appTimezone(),
           hour: "2-digit",
@@ -685,6 +705,7 @@ export async function sendEmailAlert(params: {
   messageId: string;
   priority?: "normal" | "urgent" | "quiet";
   matchedRecipient?: string;
+  snippet?: string;
 }): Promise<void> {
   const bot = getTelegramBot();
   const ownerId = process.env.TELEGRAM_OWNER_ID?.trim();
@@ -718,10 +739,12 @@ export async function sendEmailAlert(params: {
   if (params.matchedRecipient) {
     lines.push(`📥 <b>To:</b> <code>${escapeHtml(params.matchedRecipient)}</code>`);
   }
-  lines.push(
-    `<b>Subject:</b> ${escapeHtml(params.subject || "(No Subject)")}`,
-    `🕒 ${timeFormatted}`
-  );
+  lines.push(`<b>Subject:</b> ${escapeHtml(params.subject || "(No Subject)")}`);
+  const snippet = cleanSnippet(params.snippet);
+  if (snippet) {
+    lines.push(`<i>${escapeHtml(snippet)}</i>`);
+  }
+  lines.push(`🕒 ${timeFormatted}`);
   const text = lines.join("\n");
 
   await bot.api.sendMessage(ownerId, text, {

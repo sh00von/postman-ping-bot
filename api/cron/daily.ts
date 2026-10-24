@@ -104,6 +104,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             messageId: msgId,
             priority: (match?.priority as "normal" | "urgent" | "quiet") || "normal",
             matchedRecipient: recipientMatch?.recipientEmail,
+            snippet: meta.snippet,
           });
         }
       }

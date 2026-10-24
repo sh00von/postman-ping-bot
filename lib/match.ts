@@ -8,6 +8,8 @@ export interface ParsedEmailHeader {
   subject: string;
   date: string;
   recipientEmails: string[];
+  /** Short plain-text preview from Gmail. Empty when Gmail returns none. */
+  snippet: string;
 }
 
 /**

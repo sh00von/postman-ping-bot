@@ -9,7 +9,7 @@ PostmanPingBot turns Gmail into real-time Telegram notifications for specific se
 - ⚡ **Instant Alerts**: Google Pub/Sub push events deliver alerts within seconds of email arrival.
 - 🎯 **Domain & Sender Matching**: Monitor exact emails (`boss@company.com`) or entire domains (`@bank.com`), matching on real sender headers to prevent display name spoofing.
 - 📥 **Recipient Alerts (Forwarders)**: Monitor your own addresses (`hello@shovon.bd`) or a whole domain (`@shovon.bd`) and get pinged for any mail sent TO them, whoever the sender is. Works with forwarded mail (e.g. Cloudflare Email Routing) because the original To address is preserved when mail lands in Gmail. Mail your forwarder blocks never reaches Gmail and cannot alert.
-- 🛡️ **Least Privilege (`gmail.metadata`)**: Reads only headers (From, Subject, Date). Email bodies and attachments are never accessible.
+- 🛡️ **Least Privilege (`gmail.metadata`)**: Reads only headers (From, Subject, Date) plus Gmail's short snippet preview. Email bodies and attachments are never accessible.
 - 🔐 **End-to-End Security**:
   - OAuth refresh tokens encrypted in Redis using **AES-256-GCM**.
   - Google Cloud Pub/Sub push webhook verified using Google OIDC JWT signatures.

@@ -164,6 +164,9 @@ export async function getMessageMetadata(
       subject,
       date,
       recipientEmails,
+      // Snippet is part of the message resource (not the body), so it is
+      // returned under the metadata scope and needs no extra permission.
+      snippet: res.data.snippet || "",
     };
   } catch (err: unknown) {
     // If message was deleted or cannot be found
