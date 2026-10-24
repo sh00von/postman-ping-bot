@@ -7,6 +7,7 @@ export interface ParsedEmailHeader {
   senderEmail: string;
   subject: string;
   date: string;
+  recipientEmails: string[];
 }
 
 /**
@@ -40,6 +41,49 @@ export function parseFromHeader(fromHeader = ""): { senderName: string; senderEm
   }
 
   return { senderName: "", senderEmail: trimmed.toLowerCase() };
+}
+
+/**
+ * Parses a To/Cc header value into a list of lowercase email addresses.
+ * Handles display names (including quoted names that contain commas) and
+ * bare addresses: `"Support, VIP" <vip@service.io>, boss@company.com`.
+ * Non-address parts (e.g. "undisclosed-recipients") are dropped.
+ */
+export function parseAddressListHeader(headerValue = ""): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let inQuote = false;
+  let angleDepth = 0;
+
+  for (let i = 0; i < headerValue.length; i++) {
+    const ch = headerValue[i];
+    if (ch === '"' && headerValue[i - 1] !== "\\") {
+      inQuote = !inQuote;
+      current += ch;
+    } else if (!inQuote && ch === "<") {
+      angleDepth++;
+      current += ch;
+    } else if (!inQuote && ch === ">") {
+      angleDepth = Math.max(0, angleDepth - 1);
+      current += ch;
+    } else if (!inQuote && angleDepth === 0 && ch === ",") {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current);
+
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  const emails: string[] = [];
+  for (const part of parts) {
+    const { senderEmail } = parseFromHeader(part);
+    if (senderEmail && emailRegex.test(senderEmail)) {
+      emails.push(senderEmail);
+    }
+  }
+  return emails;
 }
 
 /**
@@ -207,6 +251,28 @@ export function findMatchingRule(
   for (const item of watchlist) {
     if (isSenderMatch(senderEmail, item.pattern)) {
       return item;
+    }
+  }
+  return null;
+}
+
+/**
+ * Finds which recipient (forwarder) rule matched one of the message's
+ * recipient addresses, if any. Matching semantics are identical to sender
+ * rules: an exact address ("hello@shovon.bd") or a domain pattern
+ * ("@shovon.bd", which also matches subdomains like "mail.shovon.bd").
+ * Returns the matched rule plus the actual recipient address that matched,
+ * so alerts can say which of your addresses the mail was sent to.
+ */
+export function findMatchingRecipientRule(
+  recipientEmails: string[],
+  recipientWatchlist: Array<{ pattern: string }>
+): { pattern: string; recipientEmail: string } | null {
+  for (const recipientEmail of recipientEmails || []) {
+    for (const item of recipientWatchlist) {
+      if (isSenderMatch(recipientEmail, item.pattern)) {
+        return { pattern: item.pattern, recipientEmail };
+      }
     }
   }
   return null;

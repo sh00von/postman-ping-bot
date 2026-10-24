@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   parseFromHeader,
+  parseAddressListHeader,
   isSenderMatch,
   findMatchingRule,
+  findMatchingRecipientRule,
   normalizePattern,
   parseBulkPatterns,
 } from "../lib/match.js";
@@ -149,6 +151,80 @@ describe("lib/match", () => {
 
     it("should return null when sender is not in watchlist", () => {
       const match = findMatchingRule("spam@promo.com", watchlist);
+      expect(match).toBeNull();
+    });
+  });
+
+  describe("parseAddressListHeader", () => {
+    it("should parse a single address with display name", () => {
+      expect(parseAddressListHeader("Minaruzzaman <hello@shovon.bd>")).toEqual([
+        "hello@shovon.bd",
+      ]);
+    });
+
+    it("should parse multiple addresses", () => {
+      expect(
+        parseAddressListHeader("hello@shovon.bd, Sales <sales@shovon.bd>")
+      ).toEqual(["hello@shovon.bd", "sales@shovon.bd"]);
+    });
+
+    it("should not split on commas inside quoted display names", () => {
+      expect(
+        parseAddressListHeader('"Support, VIP" <vip@service.io>, boss@company.com')
+      ).toEqual(["vip@service.io", "boss@company.com"]);
+    });
+
+    it("should lowercase addresses and drop non-address parts", () => {
+      expect(
+        parseAddressListHeader("Hello@Shovon.BD, undisclosed-recipients:;")
+      ).toEqual(["hello@shovon.bd"]);
+    });
+
+    it("should return an empty list for an empty header", () => {
+      expect(parseAddressListHeader("")).toEqual([]);
+    });
+  });
+
+  describe("findMatchingRecipientRule", () => {
+    const recipientWatchlist = [
+      { pattern: "hello@shovon.bd" },
+      { pattern: "@example.org" },
+    ];
+
+    it("should match an exact recipient address and report it", () => {
+      const match = findMatchingRecipientRule(
+        ["hello@shovon.bd"],
+        recipientWatchlist
+      );
+      expect(match).not.toBeNull();
+      expect(match?.pattern).toBe("hello@shovon.bd");
+      expect(match?.recipientEmail).toBe("hello@shovon.bd");
+    });
+
+    it("should match any address on a watched domain", () => {
+      const match = findMatchingRecipientRule(
+        ["anyone@example.org"],
+        recipientWatchlist
+      );
+      expect(match).not.toBeNull();
+      expect(match?.pattern).toBe("@example.org");
+      expect(match?.recipientEmail).toBe("anyone@example.org");
+    });
+
+    it("should match a subdomain of a watched domain", () => {
+      const match = findMatchingRecipientRule(
+        ["user@mail.example.org"],
+        recipientWatchlist
+      );
+      expect(match).not.toBeNull();
+      expect(match?.pattern).toBe("@example.org");
+    });
+
+    it("should return null when no recipient matches", () => {
+      const match = findMatchingRecipientRule(
+        ["someone@other.com"],
+        recipientWatchlist
+      );
       expect(match).toBeNull();
     });
   });

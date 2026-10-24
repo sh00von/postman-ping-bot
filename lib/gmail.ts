@@ -1,6 +1,10 @@
 import { google, gmail_v1 } from "googleapis";
 import { getOAuthTokens, saveOAuthTokens } from "./store.js";
-import { parseFromHeader, type ParsedEmailHeader } from "./match.js";
+import {
+  parseFromHeader,
+  parseAddressListHeader,
+  type ParsedEmailHeader,
+} from "./match.js";
 
 export const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.metadata"];
 
@@ -125,22 +129,33 @@ export async function getMessageMetadata(
       userId: "me",
       id: messageId,
       format: "metadata",
-      metadataHeaders: ["From", "Subject", "Date"],
+      metadataHeaders: ["From", "To", "Cc", "Subject", "Date"],
     });
 
     const headers = res.data.payload?.headers || [];
     let rawFrom = "";
+    let rawTo = "";
+    let rawCc = "";
     let subject = "";
     let date = "";
 
     for (const h of headers) {
       const name = h.name?.toLowerCase();
       if (name === "from") rawFrom = h.value || "";
+      else if (name === "to") rawTo = h.value || "";
+      else if (name === "cc") rawCc = h.value || "";
       else if (name === "subject") subject = h.value || "";
       else if (name === "date") date = h.value || "";
     }
 
     const { senderName, senderEmail } = parseFromHeader(rawFrom);
+    // To/Cc are preserved when a forwarder (e.g. Cloudflare Email Routing)
+    // delivers mail into this inbox, so they identify which of your own
+    // addresses the mail was sent to. Delivered-To is deliberately NOT used:
+    // it always holds your Gmail address, so it would match everything.
+    const recipientEmails = [
+      ...new Set([...parseAddressListHeader(rawTo), ...parseAddressListHeader(rawCc)]),
+    ];
 
     return {
       rawFrom,
@@ -148,6 +163,7 @@ export async function getMessageMetadata(
       senderEmail,
       subject,
       date,
+      recipientEmails,
     };
   } catch (err: unknown) {
     // If message was deleted or cannot be found

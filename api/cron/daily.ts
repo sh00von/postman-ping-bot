@@ -6,9 +6,10 @@ import {
   updateWatchStatus,
   getHealthStatus,
   getWatchlist,
+  getRecipientWatchlist,
   markMessageSeen,
 } from "../../lib/store.js";
-import { findMatchingRule } from "../../lib/match.js";
+import { findMatchingRule, findMatchingRecipientRule } from "../../lib/match.js";
 import { sendHealthAlert, sendEmailAlert } from "../../lib/telegram.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -70,8 +71,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // 4. Daily Catch-up Scan (Last 24 hours)
   try {
-    const watchlist = await getWatchlist();
-    if (watchlist.length > 0) {
+    const [watchlist, recipientWatchlist] = await Promise.all([
+      getWatchlist(),
+      getRecipientWatchlist(),
+    ]);
+    if (watchlist.length > 0 || recipientWatchlist.length > 0) {
       const recentIds = await getRecentMessageIds("newer_than:1d");
       let missedCount = 0;
 
@@ -81,10 +85,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!isNew) continue;
 
         const meta = await getMessageMetadata(msgId);
-        if (!meta || !meta.senderEmail) continue;
+        if (!meta) continue;
 
-        const match = findMatchingRule(meta.senderEmail, watchlist);
-        if (match) {
+        const match = meta.senderEmail
+          ? findMatchingRule(meta.senderEmail, watchlist)
+          : null;
+        const recipientMatch = findMatchingRecipientRule(
+          meta.recipientEmails,
+          recipientWatchlist
+        );
+        if (match || recipientMatch) {
           missedCount++;
           await sendEmailAlert({
             senderName: meta.senderName,
@@ -92,7 +102,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             subject: `[Catch-up] ${meta.subject}`,
             dateStr: meta.date,
             messageId: msgId,
-            priority: (match.priority as "normal" | "urgent" | "quiet") || "normal",
+            priority: (match?.priority as "normal" | "urgent" | "quiet") || "normal",
+            matchedRecipient: recipientMatch?.recipientEmail,
           });
         }
       }

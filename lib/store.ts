@@ -7,6 +7,11 @@ export interface WatchlistItem {
   addedAt: number;
 }
 
+export interface RecipientWatchlistItem {
+  pattern: string;
+  addedAt: number;
+}
+
 export interface StoredTokens {
   refresh_token: string;
   access_token?: string | null;
@@ -44,6 +49,7 @@ export function getRedisClient(): Redis {
 
 const KEYS = {
   WATCHLIST: "postman:watchlist",
+  RECIPIENT_WATCHLIST: "postman:recipient-watchlist",
   PAUSED: "postman:paused",
   OAUTH_TOKENS: "postman:oauth_tokens",
   OAUTH_LOCKED: "postman:oauth_locked",
@@ -110,6 +116,67 @@ export async function removeFromWatchlist(pattern: string): Promise<boolean> {
   const normalized = pattern.trim().toLowerCase();
   const alt = normalized.startsWith("@") ? normalized.slice(1) : `@${normalized}`;
   const removed = await redis.hdel(KEYS.WATCHLIST, normalized, alt);
+  return removed > 0;
+}
+
+/**
+ * Recipient (forwarder) watchlist management.
+ * Patterns are exact addresses ("hello@shovon.bd") or whole domains
+ * ("@shovon.bd"). Stored separately from sender rules so the two kinds of
+ * alerts stay distinguishable. Recipient alerts always use normal priority.
+ */
+export async function getRecipientWatchlist(): Promise<RecipientWatchlistItem[]> {
+  const redis = getRedisClient();
+  const rawHash = await redis.hgetall<Record<string, string | RecipientWatchlistItem>>(
+    KEYS.RECIPIENT_WATCHLIST
+  );
+  if (!rawHash) return [];
+
+  const map = new Map<string, RecipientWatchlistItem>();
+  for (const [key, val] of Object.entries(rawHash)) {
+    if (!val) continue;
+    let item: RecipientWatchlistItem;
+    if (typeof val === "string") {
+      try {
+        item = JSON.parse(val);
+      } catch {
+        item = { pattern: key, addedAt: Date.now() };
+      }
+    } else {
+      item = val;
+    }
+
+    // Canonicalize pattern: if it has no @, it's a domain so prepend @
+    const rawPattern = (item.pattern || key).trim().toLowerCase();
+    const canonical = rawPattern.startsWith("@") || rawPattern.includes("@")
+      ? rawPattern
+      : `@${rawPattern}`;
+
+    if (!map.has(canonical)) {
+      map.set(canonical, { ...item, pattern: canonical });
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => b.addedAt - a.addedAt);
+}
+
+export async function addToRecipientWatchlist(pattern: string): Promise<boolean> {
+  const redis = getRedisClient();
+  const normalized = pattern.trim().toLowerCase();
+  const item: RecipientWatchlistItem = {
+    pattern: normalized,
+    addedAt: Date.now(),
+  };
+  // Returns 1 if new field, 0 if updated
+  await redis.hset(KEYS.RECIPIENT_WATCHLIST, { [normalized]: JSON.stringify(item) });
+  return true;
+}
+
+export async function removeFromRecipientWatchlist(pattern: string): Promise<boolean> {
+  const redis = getRedisClient();
+  const normalized = pattern.trim().toLowerCase();
+  const alt = normalized.startsWith("@") ? normalized.slice(1) : `@${normalized}`;
+  const removed = await redis.hdel(KEYS.RECIPIENT_WATCHLIST, normalized, alt);
   return removed > 0;
 }
 

@@ -4,6 +4,9 @@ import {
   getWatchlist,
   addToWatchlist,
   removeFromWatchlist,
+  getRecipientWatchlist,
+  addToRecipientWatchlist,
+  removeFromRecipientWatchlist,
   isPaused,
   setPaused,
   getHealthStatus,
@@ -27,6 +30,44 @@ export function getTelegramBot(): Bot {
     setupBotHandlers(botInstance);
   }
   return botInstance;
+}
+
+/**
+ * Commands shown in Telegram's "/" menu. Published to Telegram on startup so
+ * the menu always matches the commands this deployment actually handles.
+ */
+const BOT_COMMANDS = [
+  { command: "start", description: "Show bot status and commands" },
+  { command: "add", description: "Add sender(s) or domain(s) to watch" },
+  { command: "remove", description: "Stop monitoring a sender or domain" },
+  { command: "addforward", description: "Alert on mail sent to your address(es)" },
+  { command: "removeforward", description: "Stop monitoring a recipient rule" },
+  { command: "list", description: "View everything you watch" },
+  { command: "check", description: "Test if an address matches your rules" },
+  { command: "pause", description: "Mute alerts" },
+  { command: "resume", description: "Unmute alerts" },
+  { command: "status", description: "Gmail watch health & sync info" },
+  { command: "test", description: "Send a sample alert" },
+  { command: "help", description: "Detailed command guide" },
+];
+
+let commandsRegistered = false;
+
+/**
+ * Publishes BOT_COMMANDS to Telegram's "/" menu. Runs at most once per
+ * serverless instance; the call is idempotent, so re-running it on a cold
+ * start is harmless. Non-fatal: if it fails, commands still work when typed
+ * manually — they just won't appear in the menu.
+ */
+export async function ensureBotCommands(): Promise<void> {
+  if (commandsRegistered) return;
+  try {
+    const bot = getTelegramBot();
+    await bot.api.setMyCommands(BOT_COMMANDS);
+    commandsRegistered = true;
+  } catch (err) {
+    console.warn("Failed to publish Telegram command menu:", err);
+  }
 }
 
 /**
@@ -87,16 +128,23 @@ function setupBotHandlers(bot: Bot) {
   });
 
   bot.command("start", async (ctx) => {
-    const [paused, watchlist] = await Promise.all([isPaused(), getWatchlist()]);
+    const [paused, watchlist, recipientWatchlist] = await Promise.all([
+      isPaused(),
+      getWatchlist(),
+      getRecipientWatchlist(),
+    ]);
     const msg = [
       "🤖 <b>PostmanPingBot is active!</b>",
       "",
       `• <b>Status:</b> ${paused ? "⏸️ PAUSED" : "▶️ ACTIVE"}`,
       `• <b>Watched senders/domains:</b> ${watchlist.length}`,
+      `• <b>Watched recipient addresses:</b> ${recipientWatchlist.length}`,
       "",
       "<b>Commands</b>",
       "• <code>/add &lt;email|domain&gt;</code> — add sender(s) or domain(s), bulk supported",
       "• <code>/remove &lt;email|domain&gt;</code> — stop monitoring a rule",
+      "• <code>/addforward &lt;email|domain&gt;</code> — alert on mail sent TO your address(es)",
+      "• <code>/removeforward &lt;email|domain&gt;</code> — stop monitoring a recipient rule",
       "• <code>/list</code> — view everything you watch",
       "• <code>/check &lt;email&gt;</code> — test if an address matches your rules",
       "• <code>/pause</code> — mute alerts",
@@ -122,6 +170,12 @@ function setupBotHandlers(bot: Bot) {
       "• <code>/add wpscan.com</code> — monitor a whole domain (auto → <code>@wpscan.com</code>)",
       "• <code>/add @bank.com, alerts@a.io</code> — bulk add, comma/space separated",
       "• add the word <code>urgent</code> or <code>quiet</code> to set that priority for the batch",
+      "",
+      "<b>Recipient alerts (forwarders)</b>",
+      "• <code>/addforward hello@shovon.bd</code> — alert on any mail sent TO this address, whoever sends it",
+      "• <code>/addforward @shovon.bd</code> — alert on mail sent to ANY address on your domain",
+      "• <code>/removeforward hello@shovon.bd</code> — stop monitoring a recipient rule",
+      "• Works with forwarded mail: your forwarder preserves the original To address, so the bot sees it. Mail your forwarder blocks never reaches Gmail and cannot alert.",
       "",
       "<b>Manage rules</b>",
       "• <code>/remove boss@company.com</code> — stop monitoring an address",
@@ -270,6 +324,127 @@ function setupBotHandlers(bot: Bot) {
     }
   });
 
+  // /addforward supports single or bulk recipient rules:
+  // /addforward hello@shovon.bd @shovon.bd
+  // Recipient alerts carry no priority — they always use normal delivery.
+  bot.command("addforward", async (ctx) => {
+    const text = ctx.match?.trim();
+    if (!text) {
+      await ctx.reply(
+        [
+          "⚠️ <b>Usage:</b> <code>/addforward &lt;email|@domain&gt;</code>",
+          "",
+          "<i>Examples:</i>",
+          "• <code>/addforward hello@shovon.bd</code> <i>(alert on mail sent TO this address)</i>",
+          "• <code>/addforward @shovon.bd</code> <i>(alert on mail sent to ANY address on the domain)</i>",
+          "• <code>/addforward hello@shovon.bd, sales@shovon.bd</code> <i>(bulk add)</i>",
+        ].join("\n"),
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    const { valid, invalid } = parseBulkPatterns(text);
+
+    if (valid.length === 0) {
+      await ctx.reply(
+        [
+          "❌ <b>Could not recognize any valid email addresses or domains.</b>",
+          "",
+          "Valid formats: <code>name@domain.com</code>, <code>@domain.com</code>, or <code>domain.com</code>.",
+        ].join("\n"),
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    // Fetch current recipient rules to detect duplicates
+    const currentList = await getRecipientWatchlist();
+    const existingSet = new Set(currentList.map((item) => item.pattern.toLowerCase()));
+
+    const newlyAdded: string[] = [];
+    const alreadyPresent: string[] = [];
+
+    for (const pattern of valid) {
+      if (existingSet.has(pattern)) {
+        alreadyPresent.push(pattern);
+      } else {
+        await addToRecipientWatchlist(pattern);
+        newlyAdded.push(pattern);
+        existingSet.add(pattern);
+      }
+    }
+
+    const lines: string[] = [];
+
+    if (newlyAdded.length > 0) {
+      const addedList = newlyAdded.map((p) => `• <code>${escapeHtml(p)}</code>`).join("\n");
+      lines.push(`✅ <b>Added ${newlyAdded.length} recipient rule(s):</b>`, addedList);
+    }
+
+    if (alreadyPresent.length > 0) {
+      const existingList = alreadyPresent.map((p) => `• <code>${escapeHtml(p)}</code>`).join("\n");
+      lines.push("", `ℹ️ <b>Already watched (${alreadyPresent.length}):</b>`, existingList);
+    }
+
+    if (invalid.length > 0) {
+      const invalidList = invalid.map((p) => `• <code>${escapeHtml(p)}</code>`).join("\n");
+      lines.push("", "⚠️ <b>Ignored invalid entries:</b>", invalidList);
+    }
+
+    const keyboard = new InlineKeyboard().text("📋 View watchlist", "cmd_list");
+    await ctx.reply(lines.join("\n"), {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  });
+
+  // /removeforward requires an argument; a bare /removeforward shows usage + rules
+  bot.command("removeforward", async (ctx) => {
+    const rawPattern = ctx.match?.trim();
+
+    // If no argument provided, show usage hint plus a copy-pasteable rule list
+    if (!rawPattern) {
+      const list = await getRecipientWatchlist();
+      if (list.length === 0) {
+        await ctx.reply("📭 No recipient rules configured.", { parse_mode: "HTML" });
+        return;
+      }
+
+      const items = list.map((item, idx) => {
+        const type = item.pattern.startsWith("@") ? "🌐 Domain" : "📥 Address";
+        return `${idx + 1}. <code>${escapeHtml(item.pattern)}</code> — ${type}`;
+      });
+
+      await ctx.reply(
+        [
+          "🗑️ <b>Usage:</b> <code>/removeforward &lt;email|@domain&gt;</code>",
+          "",
+          "<i>Copy a pattern below and send it with</i> <code>/removeforward</code><i>:</i>",
+          "",
+          ...items,
+        ].join("\n"),
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    // If argument provided, normalize and remove
+    const normalized = normalizePattern(rawPattern) || rawPattern.toLowerCase();
+    const removed = await removeFromRecipientWatchlist(normalized);
+
+    if (removed) {
+      await ctx.reply(`🗑️ Removed <code>${escapeHtml(normalized)}</code> from recipient rules.`, {
+        parse_mode: "HTML",
+      });
+    } else {
+      await ctx.reply(
+        `❓ <code>${escapeHtml(normalized)}</code> was not found in your recipient rules.`,
+        { parse_mode: "HTML" }
+      );
+    }
+  });
+
   // /list shows all rules with their priority and a pause toggle
   bot.command("list", async (ctx) => {
     await renderWatchlistMessage(ctx);
@@ -343,11 +518,12 @@ function setupBotHandlers(bot: Bot) {
   });
 
   bot.command("status", async (ctx) => {
-    const [health, historyId, paused, list] = await Promise.all([
+    const [health, historyId, paused, list, recipientList] = await Promise.all([
       getHealthStatus(),
       getHistoryId(),
       isPaused(),
       getWatchlist(),
+      getRecipientWatchlist(),
     ]);
 
     const tz = appTimezone();
@@ -370,6 +546,7 @@ function setupBotHandlers(bot: Bot) {
       "",
       `• <b>Alerts:</b> ${paused ? "⏸️ Paused" : "▶️ Active"}`,
       `• <b>Watchlist items:</b> ${list.length}`,
+      `• <b>Recipient (forwarder) rules:</b> ${recipientList.length}`,
       `• <b>Gmail history ID:</b> <code>${escapeHtml(String(historyId || "None"))}</code>`,
       `• <b>Gmail watch expiry:</b> ${escapeHtml(expiryStr)}`,
       `• <b>Last Pub/Sub event:</b> ${escapeHtml(lastEventStr)}`,
@@ -449,35 +626,52 @@ function setupBotHandlers(bot: Bot) {
 async function renderWatchlistMessage(ctx: {
   reply: (text: string, options?: Record<string, unknown>) => Promise<unknown>;
 }) {
-  const [list, paused] = await Promise.all([getWatchlist(), isPaused()]);
-  if (list.length === 0) {
+  const [list, recipientList, paused] = await Promise.all([
+    getWatchlist(),
+    getRecipientWatchlist(),
+    isPaused(),
+  ]);
+  if (list.length === 0 && recipientList.length === 0) {
     await ctx.reply(
-      "📭 Your watchlist is empty.\nUse <code>/add &lt;email|@domain&gt;</code> to start monitoring.",
+      "📭 Your watchlist is empty.\nUse <code>/add &lt;email|@domain&gt;</code> to start monitoring senders, or <code>/addforward &lt;email|@domain&gt;</code> to watch your own addresses.",
       { parse_mode: "HTML" }
     );
     return;
   }
 
-  const items = list.map((item, idx) => {
-    const type = item.pattern.startsWith("@") ? "🌐 Domain" : "✉️ Sender";
-    const badge = priorityBadge(item.priority);
-    return `${idx + 1}. <code>${escapeHtml(item.pattern)}</code> — ${type}${badge ? " " + badge : ""}`;
-  });
+  const msg: string[] = [`<b>Status:</b> ${paused ? "⏸️ PAUSED" : "▶️ ACTIVE"}`, ""];
 
-  const msg = [
-    `📋 <b>Watched senders (${list.length})</b>`,
-    `<b>Status:</b> ${paused ? "⏸️ PAUSED" : "▶️ ACTIVE"}`,
-    "",
-    ...items,
-    "",
-    "<i>Remove with</i> <code>/remove &lt;pattern&gt;</code><i>.</i>",
-  ].join("\n");
+  if (list.length > 0) {
+    const items = list.map((item, idx) => {
+      const type = item.pattern.startsWith("@") ? "🌐 Domain" : "✉️ Sender";
+      const badge = priorityBadge(item.priority);
+      return `${idx + 1}. <code>${escapeHtml(item.pattern)}</code> — ${type}${badge ? " " + badge : ""}`;
+    });
+    msg.push(`📋 <b>Watched senders (${list.length})</b>`, ...items, "");
+  }
+
+  if (recipientList.length > 0) {
+    const recipientItems = recipientList.map((item, idx) => {
+      const type = item.pattern.startsWith("@") ? "🌐 Domain" : "📥 Address";
+      return `${idx + 1}. <code>${escapeHtml(item.pattern)}</code> — ${type}`;
+    });
+    msg.push(
+      `📥 <b>Watched recipient addresses (${recipientList.length})</b>`,
+      ...recipientItems,
+      ""
+    );
+  }
+
+  msg.push(
+    "<i>Remove senders with</i> <code>/remove &lt;pattern&gt;</code><i>, recipients with</i> <code>/removeforward &lt;pattern&gt;</code><i>.</i>"
+  );
+  const msgText = msg.join("\n");
 
   // Non-destructive action button only. Delete via typed `/remove <email>`.
   const keyboard = new InlineKeyboard()
     .text(paused ? "▶️ Resume alerts" : "⏸️ Pause alerts", "toggle_pause");
 
-  await ctx.reply(msg, { parse_mode: "HTML", reply_markup: keyboard });
+  await ctx.reply(msgText, { parse_mode: "HTML", reply_markup: keyboard });
 }
 
 /**
@@ -490,6 +684,7 @@ export async function sendEmailAlert(params: {
   dateStr?: string;
   messageId: string;
   priority?: "normal" | "urgent" | "quiet";
+  matchedRecipient?: string;
 }): Promise<void> {
   const bot = getTelegramBot();
   const ownerId = process.env.TELEGRAM_OWNER_ID?.trim();
@@ -519,11 +714,15 @@ export async function sendEmailAlert(params: {
       ? `🔴 <b>URGENT — new mail from</b> ${fromLabel}`
       : `📬 <b>New mail from</b> ${fromLabel}`;
 
-  const text = [
-    header,
+  const lines = [header];
+  if (params.matchedRecipient) {
+    lines.push(`📥 <b>To:</b> <code>${escapeHtml(params.matchedRecipient)}</code>`);
+  }
+  lines.push(
     `<b>Subject:</b> ${escapeHtml(params.subject || "(No Subject)")}`,
-    `🕒 ${timeFormatted}`,
-  ].join("\n");
+    `🕒 ${timeFormatted}`
+  );
+  const text = lines.join("\n");
 
   await bot.api.sendMessage(ownerId, text, {
     parse_mode: "HTML",

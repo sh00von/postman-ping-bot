@@ -1,5 +1,9 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getTelegramBot, verifyTelegramWebhook } from "../lib/telegram.js";
+import {
+  getTelegramBot,
+  verifyTelegramWebhook,
+  ensureBotCommands,
+} from "../lib/telegram.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
@@ -18,6 +22,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!bot.isInited()) {
       await bot.init();
     }
+    // Keep Telegram's "/" menu in sync with the deployed commands
+    await ensureBotCommands();
     const update = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
     await bot.handleUpdate(update);
     return res.status(200).json({ ok: true });

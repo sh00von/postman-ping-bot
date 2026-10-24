@@ -4,6 +4,7 @@ import {
   getHistoryId,
   setHistoryId,
   getWatchlist,
+  getRecipientWatchlist,
   isPaused,
   markMessageSeen,
   recordLastEventTime,
@@ -16,7 +17,7 @@ import {
   getRecentMessageIds,
   watchInbox,
 } from "../lib/gmail.js";
-import { findMatchingRule } from "../lib/match.js";
+import { findMatchingRule, findMatchingRecipientRule } from "../lib/match.js";
 import { sendEmailAlert, sendHealthAlert } from "../lib/telegram.js";
 
 interface PubSubMessageBody {
@@ -89,14 +90,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).send("Notifications currently paused");
   }
 
-  // 4. Fetch watchlist
-  const watchlist = await getWatchlist();
-  if (watchlist.length === 0) {
-    // No senders configured, acknowledge and store historyId
+  // 4. Fetch sender watchlist and recipient (forwarder) watchlist
+  const [watchlist, recipientWatchlist] = await Promise.all([
+    getWatchlist(),
+    getRecipientWatchlist(),
+  ]);
+  if (watchlist.length === 0 && recipientWatchlist.length === 0) {
+    // No senders or recipient addresses configured, acknowledge and store historyId
     if (incomingHistoryId) {
       await setHistoryId(incomingHistoryId);
     }
-    return res.status(200).send("Watchlist is empty");
+    return res.status(200).send("Watchlists are empty");
   }
 
   const storedHistoryId = await getHistoryId();
@@ -162,20 +166,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     try {
       const metadata = await getMessageMetadata(messageId);
-      if (!metadata || !metadata.senderEmail) {
+      if (!metadata) {
         continue;
       }
 
-      // Check against watchlist
-      const match = findMatchingRule(metadata.senderEmail, watchlist);
-      if (match) {
+      // Check sender rules first, then recipient (forwarder) rules. A message
+      // with no parseable sender can still match a recipient rule.
+      const match = metadata.senderEmail
+        ? findMatchingRule(metadata.senderEmail, watchlist)
+        : null;
+      const recipientMatch = findMatchingRecipientRule(
+        metadata.recipientEmails,
+        recipientWatchlist
+      );
+      if (match || recipientMatch) {
         await sendEmailAlert({
           senderName: metadata.senderName,
           senderEmail: metadata.senderEmail,
           subject: metadata.subject,
           dateStr: metadata.date,
           messageId,
-          priority: (match.priority as "normal" | "urgent" | "quiet") || "normal",
+          priority: (match?.priority as "normal" | "urgent" | "quiet") || "normal",
+          matchedRecipient: recipientMatch?.recipientEmail,
         });
       }
     } catch (msgErr) {

@@ -200,7 +200,10 @@ In your private Telegram chat with your bot:
 | `/add boss@company.com` | Alert on emails from exact address |
 | `/add @bank.com` | Alert on any sender from `@bank.com` or its subdomains |
 | `/remove boss@company.com` | Remove sender or domain from watchlist |
-| `/list` | Show all watched senders & domains |
+| `/addforward hello@shovon.bd` | Alert on any mail sent TO this address, whoever sends it |
+| `/addforward @shovon.bd` | Alert on mail sent to ANY address on the domain |
+| `/removeforward hello@shovon.bd` | Remove a recipient (forwarder) rule |
+| `/list` | Show all watched senders & domains, plus recipient rules |
 | `/pause` | Temporarily silence all alerts |
 | `/resume` | Resume alerts |
 | `/status` | View watch expiration, last event received, and sync state |
